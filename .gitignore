@@ -1,0 +1,22 @@
+node_modules
+dist
+dist-electron
+out
+build
+npm_install_log.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.env
+.env.production
+.env.development
+.DS_Store
+
+# Python / Moltress backend
+.venv
+venv
+__pycache__
+*.pyc
+.pytest_cache
+.env.local
+.eslintcache

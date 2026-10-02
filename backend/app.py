@@ -1,0 +1,115 @@
+"""
+backend/app.py
+==============
+
+FastAPI application exposing the agent layer to the desktop UI.
+
+Endpoints
+---------
+GET  /api/health       Whole-chain health (backend, Ollama, model). Always 200.
+GET  /api/agents       Available agents and their tool permissions.
+POST /api/agent/chat   Run a request through router/orchestrator -> agent -> Ollama.
+
+Every response body, success or failure, is JSON. Chat failures use the
+``ChatResponse`` envelope (``ok: false`` + ``error``) with a meaningful
+HTTP status: 401 bad token, 422 invalid input, 502 malformed model output,
+503 Ollama unavailable, 504 timeout, 500 anything else.
+"""
+
+from __future__ import annotations
+
+import logging
+import secrets
+from typing import Optional
+
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from backend import __version__
+from backend.models import ApiError, ChatRequest, ChatResponse, HealthResponse
+from backend.service import AgentService
+from backend.settings import BackendSettings, load_env
+
+logger = logging.getLogger("moltress.backend")
+
+
+def create_app(service: Optional[AgentService] = None, settings: Optional[BackendSettings] = None) -> FastAPI:
+    """
+    Build the app. Tests inject an ``AgentService`` wired to
+    ``FakeOllamaClient``; production uses the real ``OllamaClient``.
+    """
+    if service is None:
+        load_env()
+        settings = settings or BackendSettings.from_env()
+        logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
+        service = AgentService(settings=settings)
+    settings = service.settings
+
+    app = FastAPI(title="Moltress Backend", version=__version__, docs_url="/api/docs", openapi_url="/api/openapi.json")
+    app.state.service = service
+
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(settings.cors_origins),
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type"],
+        )
+
+    def require_token(authorization: Optional[str] = Header(default=None)) -> None:
+        if not settings.api_token:
+            return
+        supplied = (authorization or "").removeprefix("Bearer ").strip()
+        if not secrets.compare_digest(supplied, settings.api_token):
+            raise HTTPException(status_code=401, detail="Missing or invalid API token.")
+
+    # ---- consistent JSON errors ------------------------------------------
+
+    def _err(status: int, etype: str, message: str, request_id: str = "") -> JSONResponse:
+        body = ChatResponse(
+            ok=False,
+            request_id=request_id,
+            status="error",
+            error=ApiError(type=etype, message=message, recoverable=status < 500),
+        )
+        return JSONResponse(status_code=status, content=body.model_dump(mode="json"))
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation(_: Request, exc: RequestValidationError) -> JSONResponse:
+        parts = []
+        for e in exc.errors():
+            loc = ".".join(str(p) for p in e.get("loc", ()) if p != "body")
+            msg = str(e.get("msg", "invalid")).removeprefix("Value error, ")
+            parts.append(f"{loc}: {msg}" if loc else msg)
+        return _err(422, "InvalidInput", "; ".join(parts) or "Invalid request.")
+
+    @app.exception_handler(HTTPException)
+    async def _http(_: Request, exc: HTTPException) -> JSONResponse:
+        etype = "Unauthorized" if exc.status_code == 401 else "HttpError"
+        return _err(exc.status_code, etype, str(exc.detail))
+
+    # ---- routes ------------------------------------------------------------
+
+    @app.get("/api/health", response_model=HealthResponse, dependencies=[Depends(require_token)])
+    def health() -> HealthResponse:
+        return service.health()
+
+    @app.get("/api/agents", dependencies=[Depends(require_token)])
+    def agents() -> list:
+        return service.agents_info()
+
+    @app.post("/api/agent/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
+    def chat(req: ChatRequest) -> JSONResponse:
+        # Sync endpoint: FastAPI runs it in a worker thread, so a slow local
+        # LLM never blocks health checks or other requests.
+        status, body = service.chat(req)
+        return JSONResponse(status_code=status, content=body.model_dump(mode="json"))
+
+    return app
+
+
+def get_app() -> FastAPI:
+    """ASGI factory for ``uvicorn backend.app:get_app --factory``."""
+    return create_app()
