@@ -87,6 +87,7 @@ export interface MoltressSendOptions {
   history?: Array<{ role: string; content: string }>;
   attachments?: Attachment[];
   contextFolder?: string;
+  sessionId?: string;
   /** Test seam. */
   fetchImpl?: typeof fetch;
   config?: MoltressConfig;
@@ -100,7 +101,7 @@ const ENV_FILE_KEY_PREFIX = "MOLTRESS_";
 
 function truthy(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value.trim() === "") return fallback;
-  return !["0", "false", "no", "off"].includes(value.trim().toLowerCase());
+  return ["0", "false", "no", "off"].indexOf(value.trim().toLowerCase()) === -1;
 }
 
 export function getMoltressConfig(
@@ -186,11 +187,12 @@ export interface BuiltRequest {
   files: Array<{ path: string; content: string }>;
   ignored_attachments: string[];
   context_folder?: string;
+  session_id?: string;
 }
 
 export function buildChatRequest(
   message: string,
-  opts: Pick<MoltressSendOptions, "history" | "attachments" | "contextFolder">,
+  opts: Pick<MoltressSendOptions, "history" | "attachments" | "contextFolder" | "sessionId">,
 ): BuiltRequest {
   let query = message.trim();
   let mode: "auto" | "pipeline" = "auto";
@@ -220,6 +222,7 @@ export function buildChatRequest(
     files,
     ignored_attachments: ignored,
     ...(opts.contextFolder ? { context_folder: opts.contextFolder } : {}),
+    ...(opts.sessionId ? { session_id: opts.sessionId } : {}),
   };
 }
 
@@ -416,9 +419,8 @@ export function sendMessageViaMoltress(
         });
       });
       cb.onChunk(answer);
-      // No Hermes session exists for an Agent Layer turn: omit the id so the
-      // renderer keeps the streamed text instead of reconciling with a DB.
-      cb.onDone();
+      // Pass the session ID back so the renderer reconciles with DB.
+      cb.onDone(opts.sessionId || body.request_id);
     });
   })();
 

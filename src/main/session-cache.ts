@@ -104,10 +104,12 @@ export function syncSessionCache(): CachedSession[] {
     // Fetch sessions newer than last sync, or all if first sync
     const rows = db
       .prepare(
-        `SELECT s.id, s.started_at, s.source, s.message_count, s.model, s.title
-         FROM sessions s
-         WHERE s.started_at > ?
-         ORDER BY s.started_at DESC`,
+        `SELECT s.id, strftime('%s', s.created_at) * 1000 as started_at, 'desktop' as source, 
+         (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) as message_count, 
+         'moltress' as model, NULL as title
+         FROM chat_sessions s
+         WHERE (strftime('%s', s.created_at) * 1000) > ?
+         ORDER BY s.created_at DESC`,
       )
       .all(lastSync > 0 ? lastSync - 300 : 0) as Array<{
       id: string;
@@ -142,9 +144,9 @@ export function syncSessionCache(): CachedSession[] {
         try {
           const msg = db
             .prepare(
-              `SELECT content FROM messages
+              `SELECT content FROM chat_messages
                WHERE session_id = ? AND role = 'user' AND content IS NOT NULL
-               ORDER BY timestamp, id LIMIT 1`,
+               ORDER BY created_at, id LIMIT 1`,
             )
             .get(row.id) as { content: string } | undefined;
           title = msg
@@ -187,7 +189,7 @@ export function syncSessionCache(): CachedSession[] {
         const placeholders = chunk.map(() => "?").join(", ");
         const refreshed = db
           .prepare(
-            `SELECT id, message_count FROM sessions WHERE id IN (${placeholders})`,
+            `SELECT id, (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) as message_count FROM chat_sessions s WHERE s.id IN (${placeholders})`,
           )
           .all(...chunk) as Array<{ id: string; message_count: number }>;
         for (const r of refreshed) countsById.set(r.id, r.message_count);
@@ -242,10 +244,7 @@ export function updateSessionTitle(sessionId: string, title: string): void {
     if (existsSync(dbPath)) {
       const db = new Database(dbPath);
       try {
-        db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(
-          title,
-          sessionId,
-        );
+        // chat_sessions has no title field in moltress
       } finally {
         db.close();
       }

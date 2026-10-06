@@ -195,7 +195,20 @@ export function getActiveProfileNameSync(): string {
  * saw an empty or wrong session list (issue #311).
  */
 export function activeStateDbPath(): string {
-  return join(profileHome(getActiveProfileNameSync()), "state.db");
+  // Try to use Electron app path, but fallback to process.cwd() gracefully
+  let base = process.cwd();
+  try {
+    const { app } = require("electron");
+    if (app) base = app.getAppPath();
+  } catch (e) {}
+  
+  // If the base is pointing to the outer directory, adjust to inner directory where the DB resides.
+  if (base.endsWith("moltress_integrated_application") && 
+     !require("fs").existsSync(join(base, "package.json"))) {
+       base = join(base, "moltress_integrated_application");
+  }
+  
+  return join(base, "moltress.db");
 }
 
 /**

@@ -190,7 +190,7 @@ class SearchFilesTool(BaseTool):
     def __init__(self, config: Optional[ToolConfig] = None):
         self.config = config or get_config().tools
 
-    def run(self, query: str, directory: str = ".", file_glob: str = "*.py") -> ToolResult:
+    def run(self, query: str, directory: str = ".", file_glob: str = "*") -> ToolResult:
         try:
             safe_dir = resolve_safe_path(directory, self.config.project_root)
         except PathSecurityError as exc:

@@ -169,7 +169,7 @@ class AgentConfig:
     # later by other teams.
     rag_enabled: bool = field(default_factory=lambda: _get_bool("RAG_ENABLED", False))
     graph_enabled: bool = field(default_factory=lambda: _get_bool("GRAPH_ENABLED", False))
-    memory_enabled: bool = field(default_factory=lambda: _get_bool("MEMORY_ENABLED", False))
+    memory_enabled: bool = field(default_factory=lambda: _get_bool("MEMORY_ENABLED", True))
 
     # Optional global allow-lists. None means "no additional restriction
     # beyond each agent's own default tool/permission set". When set, these

@@ -50,6 +50,7 @@ required output schema (WITHOUT an "action" field). This ends the loop.
 - Be economical: call a tool only when its result would change your
   answer. Do not call tools "to be thorough" once you already have enough
   evidence to answer confidently.
+- CRITICAL RAG RULE: If the 'Retrieved Context (RAG)' block contains information that directly addresses the user's query about a document or knowledge base, DO NOT request tool calls (like read_file or search_code) to verify it. You MUST trust the retrieved RAG text completely and output your final answer directly!
 - Some tools are marked as requiring explicit approval (destructive
   actions such as writing a file). If you request one and it was not
   approved for this request, you will be told so in the tool result —

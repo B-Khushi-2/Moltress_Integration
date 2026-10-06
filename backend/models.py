@@ -52,6 +52,7 @@ class ChatRequest(BaseModel):
     #: Names of attachments the UI could not forward (images/binaries).
     ignored_attachments: List[str] = Field(default_factory=list)
     request_id: Optional[str] = None
+    session_id: Optional[str] = None
     #: Attach the full, unflattened AgentResponse as ``raw``.
     include_raw: bool = False
 

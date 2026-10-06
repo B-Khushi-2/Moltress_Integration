@@ -111,9 +111,7 @@ class OllamaClient:
                 "temperature": temp,
                 "top_p": self.config.top_p,
                 "num_predict": self.config.max_tokens,
-                "num_ctx": 2048,
-                "num_gpu": 0,
-                "use_mmap": False,
+                "num_ctx": 4096,
             },
         }
         if use_json:

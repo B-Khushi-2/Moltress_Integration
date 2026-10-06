@@ -1759,7 +1759,16 @@ function setupIPC(): void {
   );
 
   // Sessions
-  ipcMain.handle("list-sessions", (_event, limit?: number, offset?: number) => {
+  // Sessions
+  ipcMain.handle("list-sessions", async (_event, limit?: number, offset?: number) => {
+    try {
+      const { isMoltressEnabled, getMoltressConfig } = require("./moltress");
+      if (isMoltressEnabled()) {
+        const res = await fetch(`${getMoltressConfig().backendUrl}/api/sessions`, { headers: { "Authorization": `Bearer ${getMoltressConfig().apiToken}` } });
+        if (res.ok) return await res.json();
+      }
+    } catch {}
+
     const conn = getConnectionConfig();
     if (conn.mode === "remote") return remoteListSessions(conn, limit, offset);
     if (conn.mode === "ssh" && conn.ssh)
@@ -1771,7 +1780,15 @@ function setupIPC(): void {
     return listSessions(limit, offset);
   });
 
-  ipcMain.handle("get-session-messages", (_event, sessionId: string) => {
+  ipcMain.handle("get-session-messages", async (_event, sessionId: string) => {
+    try {
+      const { isMoltressEnabled, getMoltressConfig } = require("./moltress");
+      if (isMoltressEnabled()) {
+        const res = await fetch(`${getMoltressConfig().backendUrl}/api/sessions/${sessionId}/messages`, { headers: { "Authorization": `Bearer ${getMoltressConfig().apiToken}` } });
+        if (res.ok) return await res.json();
+      }
+    } catch {}
+
     const conn = getConnectionConfig();
     if (conn.mode === "remote")
       return remoteGetSessionMessages(conn, sessionId).then((items) =>

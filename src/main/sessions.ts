@@ -262,19 +262,18 @@ export function listSessions(limit = 30, offset = 0): SessionSummary[] {
   const db = getDb();
   if (!db) return [];
 
-  // Simple query without correlated subquery — titles come from session cache
   const rows = db
     .prepare(
       `SELECT
         s.id,
-        s.source,
-        s.started_at,
-        s.ended_at,
-        s.message_count,
-        s.model,
-        s.title
-      FROM sessions s
-      ORDER BY s.started_at DESC
+        'desktop' as source,
+        strftime('%s', s.created_at) * 1000 as started_at,
+        NULL as ended_at,
+        (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) as message_count,
+        'moltress' as model,
+        NULL as title
+      FROM chat_sessions s
+      ORDER BY s.created_at DESC
       LIMIT ? OFFSET ?`,
     )
     .all(limit, offset) as Array<{
@@ -311,19 +310,17 @@ export function searchSessions(query: string, limit = 20): SearchResult[] {
       .prepare(
         `SELECT
           s.id as session_id,
-          s.title,
-          s.started_at,
-          s.source,
-          s.message_count,
-          s.model
-        FROM sessions s
-        WHERE LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'
-          OR LOWER(s.id) LIKE ? ESCAPE '\\'
-        ORDER BY s.started_at DESC
+          NULL as title,
+          strftime('%s', s.created_at) * 1000 as started_at,
+          'desktop' as source,
+          (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id) as message_count,
+          'moltress' as model
+        FROM chat_sessions s
+        WHERE LOWER(s.id) LIKE ? ESCAPE '\\'
+        ORDER BY s.created_at DESC
         LIMIT ?`,
       )
       .all(
-        `%${escapeLikePattern(trimmedQuery.toLocaleLowerCase())}%`,
         `%${escapeLikePattern(trimmedQuery.toLocaleLowerCase())}%`,
         limit,
       ) as Array<{
@@ -358,17 +355,17 @@ export function searchSessions(query: string, limit = 20): SearchResult[] {
     const ftsRows = tableCheck
       ? (db
           .prepare(
-            `SELECT DISTINCT
+        `SELECT DISTINCT
               m.session_id,
-              s.title,
-              s.started_at,
-              s.source,
-              s.message_count,
-              s.model,
+              NULL as title,
+              strftime('%s', s.created_at) * 1000 as started_at,
+              'desktop' as source,
+              (SELECT COUNT(*) FROM chat_messages cm WHERE cm.session_id = s.id) as message_count,
+              'moltress' as model,
               snippet(messages_fts, 0, '<<', '>>', '...', 40) as snippet
             FROM messages_fts
-            JOIN messages m ON m.id = messages_fts.rowid
-            JOIN sessions s ON s.id = m.session_id
+            JOIN chat_messages m ON m.id = messages_fts.rowid
+            JOIN chat_sessions s ON s.id = m.session_id
             WHERE messages_fts MATCH ?
             ORDER BY rank
             LIMIT ?`,
@@ -390,15 +387,15 @@ export function searchSessions(query: string, limit = 20): SearchResult[] {
           m.id as message_id,
           m.content,
           m.session_id,
-          s.title,
-          s.started_at,
-          s.source,
-          s.message_count,
-          s.model
-        FROM messages m
-        JOIN sessions s ON s.id = m.session_id
+          NULL as title,
+          strftime('%s', s.created_at) * 1000 as started_at,
+          'desktop' as source,
+          (SELECT COUNT(*) FROM chat_messages m2 WHERE m2.session_id = s.id) as message_count,
+          'moltress' as model
+        FROM chat_messages m
+        JOIN chat_sessions s ON s.id = m.session_id
         WHERE LOWER(COALESCE(m.content, '')) LIKE ? ESCAPE '\\'
-        ORDER BY s.started_at DESC, m.timestamp ASC, m.id ASC
+        ORDER BY s.created_at DESC, m.created_at ASC, m.id ASC
         LIMIT ?`,
       )
       .all(
@@ -671,12 +668,12 @@ export function getSessionMessages(sessionId: string): HistoryItem[] {
 
   const rows = db
     .prepare(
-      `SELECT id, role, content, timestamp,
-              tool_call_id, tool_calls, tool_name,
-              reasoning, reasoning_content, reasoning_details
-       FROM messages
+      `SELECT id, role, content, strftime('%s', created_at) * 1000 as timestamp,
+              NULL as tool_call_id, NULL as tool_calls, NULL as tool_name,
+              NULL as reasoning, NULL as reasoning_content, NULL as reasoning_details
+       FROM chat_messages
        WHERE session_id = ? AND role IN ('user', 'assistant', 'tool')
-       ORDER BY timestamp, id`,
+       ORDER BY created_at, id`,
     )
     .all(sessionId) as RawMessageRow[];
 
@@ -727,8 +724,8 @@ function normalizeSessionIds(sessionIds: string[]): string[] {
 function deleteSessionRows(db: Database.Database, sessionId: string): number {
   deletePromptImageAttachmentsForSession(db, sessionId);
   deleteSessionContinuationForSession(db, sessionId);
-  db.prepare("DELETE FROM messages WHERE session_id = ?").run(sessionId);
-  const result = db.prepare("DELETE FROM sessions WHERE id = ?").run(sessionId);
+  db.prepare("DELETE FROM chat_messages WHERE session_id = ?").run(sessionId);
+  const result = db.prepare("DELETE FROM chat_sessions WHERE id = ?").run(sessionId);
   return result.changes;
 }
 

@@ -34,6 +34,7 @@ from agents.providers import GraphProvider, MemoryProvider, RAGProvider, Verific
 from agents.schemas.common import AgentRequest, AgentResponse, RoutingDecision
 from agents.security_agent import SecurityAgent
 from agents.testing_agent import TestingAgent
+from agents.conversational_agent import ConversationalRAGAgent
 
 logger = logging.getLogger("moltress.agents.router")
 
@@ -69,7 +70,7 @@ _KEYWORD_RULES: List[tuple] = [
         "documentation_agent",
         re.compile(
             r"\b(document\w*|docstring\w*|readme|api docs?|explain (this|the) (module|class|function)|"
-            r"generate docs?)\b",
+            r"generate docs?|rag|knowledge base|kb)\b",
             re.IGNORECASE,
         ),
     ),
@@ -89,6 +90,7 @@ _AGENT_REGISTRY: Dict[str, Type[BaseAgent]] = {
     "testing_agent": TestingAgent,
     "security_agent": SecurityAgent,
     "documentation_agent": DocumentationAgent,
+    "conversational_agent": ConversationalRAGAgent,
 }
 
 _DEFAULT_AGENT = "developer_agent"
@@ -96,7 +98,7 @@ _DEFAULT_AGENT = "developer_agent"
 _ROUTING_SYSTEM_PROMPT = """
 You are a routing classifier for the Moltress multi-agent system. Given a
 user's request, respond with ONLY one of these exact labels, nothing else:
-developer_agent, debugging_agent, testing_agent, security_agent, documentation_agent
+developer_agent, debugging_agent, testing_agent, security_agent, documentation_agent, conversational_agent
 """.strip()
 
 
@@ -226,7 +228,27 @@ class AgentRouter:
 
     def route_and_run(self, request: AgentRequest) -> AgentResponse:
         """Classify the request, run it against the chosen agent, and return its response."""
+        
+        # Early RAG signal detection
+        if self.rag_provider and self.config.rag_enabled and not request.context.retrieved_documents:
+            try:
+                request.context.retrieved_documents = self.rag_provider.retrieve(
+                    request.query, project_root=self.config.tools.project_root
+                )
+            except Exception as e:
+                logger.warning(f"RAG retrieval failed in router: {e}")
+
         decision = self.route(request.query)
+        
+        if request.context.retrieved_documents and "conversational_agent" in self._enabled_agent_names():
+            # If RAG returned context, it heavily signals a knowledge query.
+            # Override LLM fallback to use ConversationalRAGAgent.
+            # Only keep keyword matches if they genuinely matched code tools
+            if decision.matched_rule != "keyword" or decision.agent_name == "documentation_agent":
+                decision.agent_name = "conversational_agent"
+                decision.reason = "RAG retrieval returned context for a general query."
+                decision.matched_rule = "rag_signal"
+
         agent = self.get_agent(decision.agent_name)
         logger.info(
             "Routed request %s to %s (confidence=%.2f, rule=%s)",

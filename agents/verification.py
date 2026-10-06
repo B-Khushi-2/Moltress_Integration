@@ -65,13 +65,30 @@ class CodeFactVerificationProvider(VerificationProvider):
             return DetailedVerificationResult(verified=False, notes="No response object provided to verification.")
 
         # -------------------------------------------------------------------
-        # Check 1: Tool Evidence Verification
+        # Check 1: Tool Evidence Verification & RAG Grounding
         # -------------------------------------------------------------------
         if response.tools_used:
             successful_tools = [t for t in response.tools_used if t.success]
-            verified_claims.append(f"{len(successful_tools)} tool call(s) executed and verified successfully.")
-        elif response.status == "success":
-            unverified_claims.append("Agent marked task successful without executing any tool calls for grounding.")
+            failed_tools = [t for t in response.tools_used if not t.success]
+            
+            if failed_tools:
+                unverified_claims.append(f"{len(failed_tools)} tool call(s) failed during execution.")
+            
+            if successful_tools:
+                verified_claims.append(f"{len(successful_tools)} tool call(s) executed and verified successfully.")
+            elif failed_tools and not successful_tools:
+                # If tools failed and NONE succeeded, it's not verified
+                pass
+        
+        # Check if RAG was used safely 
+        if context and context.context and context.context.retrieved_documents:
+            # If the response explicitly cites proper evidence
+            if response.evidence:
+                verified_claims.append("Response properly grounded in retrieved RAG context.")
+            else:
+                unverified_claims.append("RAG context was provided but response provided no citations/evidence.")
+        elif not response.tools_used and response.status == "success":
+            unverified_claims.append("Agent marked task successful without executing any tool calls or providing RAG citations for grounding.")
 
         # -------------------------------------------------------------------
         # Check 2: File Reference Verification

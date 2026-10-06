@@ -146,7 +146,9 @@ function Chat({
   const [connectionModeLoaded, setConnectionModeLoaded] = useState(false);
   // Working folder bound to this conversation (issue #27). Per-conversation,
   // held in memory; reset on session switch / new chat below.
-  const [contextFolder, setContextFolder] = useState<string | null>(null);
+  const [contextFolder, setContextFolder] = useState<string | null>(() => {
+    return localStorage.getItem("hermes.workspace.folderPath");
+  });
   // Whether the worktree panel is visible (only applies when contextFolder is set)
   // Default false so the panel doesn't open automatically and interfere with scrolling
   const [worktreeVisible, setWorktreeVisible] = useState<boolean>(false);

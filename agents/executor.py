@@ -190,7 +190,19 @@ class AgentExecutionLoop:
                 )
 
                 if state.consecutive_tool_failures() >= self.config.orchestration.max_consecutive_tool_failures:
-                    state.status = "stopped_needs_approval" if self._recent_calls_all_denied(state) else "stopped_tool_failures"
+                    all_denied = self._recent_calls_all_denied(state)
+                    messages.append(
+                        LLMMessage(
+                            role="user",
+                            content="Your tool calls repeatedly failed. Do not attempt further tool usage. Provide your best final JSON answer immediately using the retrieved context and conversation history. Clearly state your limitations and uncertainty."
+                        )
+                    )
+                    try:
+                        raw = self.llm_client.chat_json(system_prompt=system_prompt, messages=messages)
+                        state.final_result = self._normalize_final_answer(raw)
+                        state.status = "stopped_needs_approval" if all_denied else "partial"
+                    except:
+                        state.status = "stopped_needs_approval" if all_denied else "stopped_tool_failures"
                     break
                 continue
 
@@ -199,9 +211,19 @@ class AgentExecutionLoop:
             state.status = "completed"
             break
         else:
-            # Loop exhausted without a break: max iterations reached while
-            # the model was still requesting tools.
-            state.status = "stopped_max_iterations"
+            # Loop exhausted without a break: max iterations reached
+            messages.append(
+                LLMMessage(
+                    role="user",
+                    content="Max iterations reached. Do not use tools. Provide your final JSON answer now based on available evidence, stating uncertainty."
+                )
+            )
+            try:
+                raw = self.llm_client.chat_json(system_prompt=system_prompt, messages=messages)
+                state.final_result = self._normalize_final_answer(raw)
+                state.status = "partial"
+            except:
+                state.status = "stopped_max_iterations"
 
         return state
 

@@ -111,6 +111,12 @@ Respond with the fields of DocumentationAgentResponse:
 parameters, returns, source_file), `doc_format`, plus common fields
 `explanation`, `confidence`, `evidence`, `assumptions`, `warnings`.
 
+CRITICAL RULES FOR OUTPUT:
+1. Every list field (such as `documented_symbols`, `evidence`, `assumptions`, `warnings`) MUST be a valid JSON list `[...]`. NEVER output `null` for a list field.
+2. If the user asks a conversational question or simple fact retrieval (like "What is the RAG test number?"), DO NOT hallucinate documented symbols. You MUST forcefully output an explicitly empty list: `[]` for `documented_symbols`, and simply type the answer into the `explanation` and `documentation_markdown` fields! 
+3. If the 'Retrieved Context (RAG)' block contains information that answers the user's query, DO NOT call tools (like read_file or search_code). Trust the provided RAG text completely and output your final answer directly!
+4. Always provide a valid string for `doc_format` (e.g. "markdown").
+
 # CONFIDENCE
 - HIGH: full implementation was inspected and behavior/edge cases are
   clearly evidenced in the code.

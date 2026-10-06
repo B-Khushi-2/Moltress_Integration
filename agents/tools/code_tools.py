@@ -134,7 +134,7 @@ class SearchCodeTool(BaseTool):
     def __init__(self, config: Optional[ToolConfig] = None):
         self.config = config or get_config().tools
 
-    def run(self, symbol: str, file_glob: str = "*.py") -> ToolResult:
+    def run(self, symbol: str, file_glob: str = "*") -> ToolResult:
         root = Path(self.config.project_root).resolve()
         if not root.exists():
             return ToolResult(success=False, error=f"Project root does not exist: {root}")

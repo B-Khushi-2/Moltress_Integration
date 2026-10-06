@@ -192,7 +192,13 @@ class BaseAgent:
             docs = "\n\n".join(
                 f"[{d.source}] (score={d.score}):\n{d.content}" for d in request.context.retrieved_documents
             )
-            sections.append(f"## Retrieved Context (RAG — retrieved by the system, not user-authored)\n{docs}")
+            sections.append(
+                f"## Retrieved Context (RAG — retrieved by the system, not user-authored)\n{docs}\n\n"
+                "**CRITICAL RAG RULE**: The retrieved context above is VALID evidence. You must trust it. "
+                "Do NOT re-verify this information using filesystem tools (like read_file or search_code). "
+                "If the context provides the answer, output your final answer directly and cite the chunk source. "
+                "Only call tools if this context is explicitly insufficient."
+            )
 
         if request.context.graph_context:
             rels = "\n".join(
@@ -308,31 +314,44 @@ class BaseAgent:
                 start=start,
             )
 
-        # Context Retrieval: RAG / Knowledge Graph / Memory (no-ops unless
-        # both the relevant config flag AND a real provider are supplied).
+        # Context Retrieval
         self._enrich_context(request)
-
         self._log_invocation(request)
 
-        loop = AgentExecutionLoop(
-            llm_client=self.llm_client, tools=self._tools, config=self.config, agent_name=self.agent_name,
-        )
-        try:
-            state = loop.execute(
-                request,
-                system_prompt=self._effective_system_prompt(),
-                initial_user_prompt=self.build_user_prompt(request),
+        max_validation_retries = 2
+        last_response = None
+        
+        system_prompt = self._effective_system_prompt()
+        initial_user_prompt = self.build_user_prompt(request)
+        
+        for attempt in range(max_validation_retries):
+            loop = AgentExecutionLoop(
+                llm_client=self.llm_client, tools=self._tools, config=self.config, agent_name=self.agent_name,
             )
-        except LoopLLMError as exc:
-            return self._error_response(request_id, exc.error_type, exc.message, recoverable=True, start=start)
+            try:
+                state = loop.execute(
+                    request,
+                    system_prompt=system_prompt,
+                    initial_user_prompt=initial_user_prompt,
+                )
+            except LoopLLMError as exc:
+                return self._error_response(request_id, exc.error_type, exc.message, recoverable=True, start=start)
 
-        if state.final_result is not None:
-            response = self._parse_response(state.final_result, request_id, start)
-            if response.status == AgentStatus.ERROR:
-                return response
-        else:
-            response = self._build_stopped_response(state, request_id, start)
+            if state.final_result is not None:
+                response = self._parse_response(state.final_result, request_id, start)
+                if response.status != AgentStatus.ERROR or response.error.error_type != "MalformedOutput":
+                    last_response = response
+                    break
+                else:
+                    # Model failed schema validation. Append the error and retry.
+                    logger.warning("[%s] Schema validation failed on attempt %d, retrying...", self.agent_name, attempt + 1)
+                    initial_user_prompt += f"\n\n## Automatic Retry ({attempt+1})\nPrevious JSON generation failed schema validation: {response.error.message}\nPlease ensure the exact requested JSON shape is strictly followed."
+                    last_response = response
+            else:
+                last_response = self._build_stopped_response(state, request_id, start)
+                break
 
+        response = last_response
         response = self.postprocess(response, request)
         response.tools_used = list(state.tools_used)
         if state.assumptions:
@@ -437,6 +456,18 @@ class BaseAgent:
         conf = str(raw.get("confidence") or "unknown").lower()
         if conf not in _valid_confidences:
             conf = "unknown"
+        # 2. Extract explanation safely
+        if not raw.get("explanation") and isinstance(raw.get("reasoning"), str):
+            raw["explanation"] = raw.pop("reasoning")
+        
+        # 2b. Normalize status ENUM aggressively to avoid trivial Pydantic fails
+        if raw.get("status") and isinstance(raw.get("status"), str):
+            st = raw.get("status").lower()
+            if st not in ["success", "partial", "needs_input", "error"]:
+                raw["status"] = "success"
+            else:
+                raw["status"] = st
+
         raw["confidence"] = conf
 
         cs = raw.get("confidence_score")
@@ -447,22 +478,53 @@ class BaseAgent:
         _list_fields = [
             "evidence", "assumptions", "warnings", "tools_used", "proposed_changes",
             "design_notes", "generated_tests", "candidate_causes", "identified_edge_cases",
-            "follow_up_suggestions", "steps", "findings",
+            "follow_up_suggestions", "steps", "findings", "documented_symbols",
         ]
         for fld in _list_fields:
             if raw.get(fld) is None:
                 raw[fld] = []
 
+        if raw.get("doc_format") is None:
+            raw["doc_format"] = "markdown"
+
+        if isinstance(raw.get("documented_symbols"), list):
+            norm_sym = []
+            for sym in raw["documented_symbols"]:
+                if isinstance(sym, dict):
+                    norm_sym.append({
+                        "name": str(sym.get("name") or sym.get("symbol") or "Unknown"),
+                        "kind": str(sym.get("kind") or sym.get("type") or "function"),
+                        "summary": str(sym.get("summary") or sym.get("description") or "Documentation generated by LLM."),
+                        "parameters": sym.get("parameters") if isinstance(sym.get("parameters"), list) else [],
+                        "returns": str(sym.get("returns")) if sym.get("returns") else None,
+                        "source_file": str(sym.get("source_file") or sym.get("file")) if sym.get("source_file") or sym.get("file") else None
+                    })
+                elif isinstance(sym, str):
+                    norm_sym.append({
+                        "name": str(sym),
+                        "kind": "function",
+                        "summary": "Documentation generated by LLM.",
+                        "parameters": [],
+                        "returns": None,
+                        "source_file": None
+                    })
+            raw["documented_symbols"] = norm_sym
+
         # 4. evidence: plain string → single Evidence dict
         if isinstance(raw.get("evidence"), str):
             raw["evidence"] = [{"source": "model_output", "reason": raw["evidence"]}]
 
-        # 5. evidence: list items that are plain strings → Evidence dicts
+        # 5. evidence: list items that are plain strings → Evidence dicts, and fix dicts missing 'source'
         if isinstance(raw.get("evidence"), list):
-            raw["evidence"] = [
-                item if isinstance(item, dict) else {"source": "model_output", "reason": str(item)}
-                for item in raw["evidence"]
-            ]
+            norm_ev = []
+            for item in raw["evidence"]:
+                if isinstance(item, dict):
+                    src = item.get("source") or item.get("file_path") or item.get("file") or "model_output"
+                    rsn = item.get("reason") or item.get("excerpt") or item.get("content") or "Relevant evidence snippet"
+                    norm_ev.append({"source": str(src), "reason": str(rsn)})
+                else:
+                    norm_ev.append({"source": "model_output", "reason": str(item)})
+            raw["evidence"] = norm_ev
 
         # 6. tools_used: entries that are plain strings → ToolInvocationRecord dicts
         if isinstance(raw.get("tools_used"), list):

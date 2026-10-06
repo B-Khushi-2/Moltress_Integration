@@ -55,6 +55,32 @@ Instead of managing the CLI by hand, the app walks through install, provider set
   
   > **[Atlas Cloud](https://www.atlascloud.ai/?utm_source=github&utm_medium=link&utm_campaign=hermes-desktop)** is a full-modal, OpenAI-compatible AI inference platform (DeepSeek, Qwen, GLM, Kimi, MiniMax, and more). Use it in Hermes Desktop by selecting **Atlas Cloud** as your provider — the base URL is pre-configured automatically.
 
+## Team Quick Start (Local Setup)
+
+To quickly spin up the entire application architecture on your local machine, open three separate terminal windows and run the following configuration scripts. Note: These paths are specific to the `E:\Moltress` drive setup. Update the drive paths to your installation directory if you cloned it elsewhere.
+
+**1. Start the FastAPI Backend**
+```powershell
+cd E:\Moltress\moltress_integrated_application
+python -m backend
+```
+
+**2. Start the Local Ollama AI Server**
+```powershell
+$env:OLLAMA_TMPDIR="E:\OllamaTmp"
+$env:OLLAMA_MODELS="E:\OllamaModels"
+& "E:\Ollama\ollama.exe" serve
+```
+
+**3. Start the Electron Frontend UI**
+```powershell
+$env:npm_config_cache="E:\npm-cache"
+$env:TEMP="E:\temp"
+$env:ELECTRON_CACHE="E:\electron-cache"
+cd E:\Moltress\moltress_integrated_application
+npm run dev
+```
+
 ## Install
 
 <a href="https://hermesone.org"><img width="380" alt="Download Now" src="previews/download.webp" /></a>

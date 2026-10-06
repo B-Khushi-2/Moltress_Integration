@@ -39,9 +39,9 @@ from agents.orchestrator import AgentOrchestrator
 from agents.providers_impl import (
     ASTGraphProvider,
     CodeFactVerificationProvider,
-    InMemoryMemoryProvider,
     LocalCodeRAGProvider,
 )
+from backend.db_providers import SQLAlchemyMemoryProvider
 from agents.schemas.common import (
     AgentContext,
     AgentRequest,
@@ -103,7 +103,7 @@ class AgentService:
         self._verification = CodeFactVerificationProvider() if self.settings.verification_enabled else None
         self._rag = LocalCodeRAGProvider() if self.config.rag_enabled else None
         self._graph = ASTGraphProvider() if self.config.graph_enabled else None
-        self._memory = InMemoryMemoryProvider() if self.config.memory_enabled else None
+        self._memory = SQLAlchemyMemoryProvider() if self.config.memory_enabled else None
 
         self._routers: "OrderedDict[str, AgentRouter]" = OrderedDict()
         self._max_cached_routers = max_cached_routers
@@ -179,7 +179,11 @@ class AgentService:
     def chat(self, req: ChatRequest) -> Tuple[int, ChatResponse]:
         """Run one request through the agent layer. Returns (http_status, body)."""
         request_id = req.request_id or str(uuid.uuid4())
-        req = req.model_copy(update={"request_id": request_id})
+        session_id = req.session_id or request_id
+        req = req.model_copy(update={"request_id": request_id, "session_id": session_id})
+        
+        if self._memory:
+            self._memory.append(session_id, MemoryEntry(role="user", content=req.query))
         root, notes = self._resolve_root(req.context_folder)
         if req.ignored_attachments:
             notes.append(
@@ -191,7 +195,10 @@ class AgentService:
             router = self._router_for(root)
 
             if req.mode == "pipeline":
-                return self._run_pipeline(req, agent_request, router, notes)
+                status, body = self._run_pipeline(req, agent_request, router, notes)
+                if self._memory and body.ok and body.answer:
+                    self._memory.append(session_id, MemoryEntry(role="assistant", content=body.answer))
+                return status, body
 
             if req.agent:
                 try:
@@ -209,7 +216,12 @@ class AgentService:
             else:
                 response = router.route_and_run(agent_request)
 
-            return self._finish(response, req, notes)
+            status, body = self._finish(response, req, notes)
+            
+            if self._memory and body.ok and body.answer:
+                self._memory.append(session_id, MemoryEntry(role="assistant", content=body.answer))
+                
+            return status, body
         except Exception as exc:  # noqa: BLE001 - never leak a traceback to the UI
             logger.exception("Unhandled error while serving request %s", request_id)
             return 500, self._error_body(

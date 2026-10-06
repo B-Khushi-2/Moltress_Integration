@@ -31,8 +31,13 @@ from backend import __version__
 from backend.models import ApiError, ChatRequest, ChatResponse, HealthResponse
 from backend.service import AgentService
 from backend.settings import BackendSettings, load_env
+from pydantic import BaseModel
 
 logger = logging.getLogger("moltress.backend")
+
+class IngestRequest(BaseModel):
+    path: str
+    workspace: str = "default"
 
 
 def create_app(service: Optional[AgentService] = None, settings: Optional[BackendSettings] = None) -> FastAPI:
@@ -47,16 +52,20 @@ def create_app(service: Optional[AgentService] = None, settings: Optional[Backen
         service = AgentService(settings=settings)
     settings = service.settings
 
+    # Database Initialization
+    from backend.database import Base, engine
+    Base.metadata.create_all(bind=engine)
+
     app = FastAPI(title="Moltress Backend", version=__version__, docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.service = service
 
-    if settings.cors_origins:
-        app.add_middleware(
-            CORSMiddleware,
-            allow_origins=list(settings.cors_origins),
-            allow_methods=["GET", "POST"],
-            allow_headers=["Authorization", "Content-Type"],
-        )
+    origins = list(settings.cors_origins) if settings.cors_origins else ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     def require_token(authorization: Optional[str] = Header(default=None)) -> None:
         if not settings.api_token:
@@ -99,6 +108,91 @@ def create_app(service: Optional[AgentService] = None, settings: Optional[Backen
     @app.get("/api/agents", dependencies=[Depends(require_token)])
     def agents() -> list:
         return service.agents_info()
+
+    @app.post("/api/rag/ingest", dependencies=[Depends(require_token)])
+    def ingest_knowledge(req: IngestRequest) -> JSONResponse:
+        import sys
+        from pathlib import Path
+        import subprocess
+        
+        try:
+            target_path = Path(req.path).expanduser().resolve()
+            if not target_path.exists():
+                return _err(400, "InvalidPath", f"Path does not exist: {target_path}")
+            
+            moltress_rag_path = Path(__file__).parent.parent.parent / "Moltress_RAG" if Path(__file__).parent.parent.parent.joinpath("Moltress_RAG").exists() else Path(__file__).parent.parent / "Moltress_RAG"
+            
+            # Execute exactly identically to CLI workflow
+            cmd = [sys.executable, str(moltress_rag_path / "main.py"), "learn", str(target_path), "-w", req.workspace]
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(moltress_rag_path))
+            
+            if result.returncode == 0:
+                chunks = 0
+                for line in result.stdout.splitlines():
+                    if "chunks indexed" in line.lower():
+                        try:
+                            # Try to extract a total chunk count approximation from the log
+                            import re
+                            if match := re.search(r'(\d+)', line):
+                                chunks += int(match.group(1))
+                        except Exception:
+                            pass
+                return JSONResponse(status_code=200, content={"ok": True, "workspace": req.workspace, "chunks": chunks, "log": result.stdout})
+            else:
+                return _err(500, "IngestionError", f"Failed to ingest: {result.stderr or result.stdout}")
+                
+        except Exception as e:
+            logger.error("Ingestion subprocess error: %s", str(e))
+            return _err(500, "InternalError", str(e))
+
+    @app.get("/api/sessions", dependencies=[Depends(require_token)])
+    def get_sessions() -> JSONResponse:
+        try:
+            from backend.database import SessionLocal
+            from backend.db_models import ChatSession, ChatMessage
+            from sqlalchemy import func
+            with SessionLocal() as db:
+                sessions = db.query(
+                    ChatSession.id,
+                    ChatSession.created_at,
+                    func.count(ChatMessage.id).label("message_count")
+                ).outerjoin(ChatMessage).group_by(ChatSession.id).order_by(ChatSession.created_at.desc()).all()
+
+                result = [
+                    {
+                        "sessionId": s.id,
+                        "title": f"Moltress Session {s.id[:6]}",
+                        "source": "moltress",
+                        "startedAt": int(s.created_at.timestamp() * 1000) if s.created_at else 0,
+                        "messageCount": s.message_count,
+                        "model": "qwen2.5-coder:7b",
+                        "preview": "Moltress Desktop conversation"
+                    }
+                    for s in sessions
+                ]
+                return JSONResponse(status_code=200, content=result)
+        except Exception as e:
+            return _err(500, "DatabaseError", str(e))
+
+    @app.get("/api/sessions/{session_id}/messages", dependencies=[Depends(require_token)])
+    def get_session_messages(session_id: str) -> JSONResponse:
+        try:
+            from backend.database import SessionLocal
+            from backend.db_models import ChatMessage
+            with SessionLocal() as db:
+                messages = db.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc()).all()
+                result = [
+                    {
+                        "kind": m.role if m.role in ["user", "assistant"] else "assistant",
+                        "id": m.id,
+                        "content": m.content,
+                        "timestamp": int(m.created_at.timestamp() * 1000) if m.created_at else 0,
+                    }
+                    for m in messages
+                ]
+                return JSONResponse(status_code=200, content=result)
+        except Exception as e:
+            return _err(500, "DatabaseError", str(e))
 
     @app.post("/api/agent/chat", response_model=ChatResponse, dependencies=[Depends(require_token)])
     def chat(req: ChatRequest) -> JSONResponse:

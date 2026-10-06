@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { Image as ImageIcon, Upload, Trash2, Search, X, Maximize2 } from "lucide-react";
+import { Image as ImageIcon, Upload, Trash2, Search, X } from "lucide-react";
 
 interface MemoryImageItem {
   id: string;

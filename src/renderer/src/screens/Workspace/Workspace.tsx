@@ -236,6 +236,8 @@ export default function Workspace({ visible }: WorkspaceProps): React.JSX.Elemen
 
   const [rootEntries, setRootEntries] = useState<FileEntry[] | null>(null);
   const [isLoadingRoot, setIsLoadingRoot] = useState(false);
+  const [isIngesting, setIsIngesting] = useState(false);
+  const [ingestStatus, setIngestStatus] = useState<string | null>(null);
 
   // Editor vs Dashboard mode toggles
   const [isEditorMode, setIsEditorMode] = useState(false);
@@ -551,6 +553,33 @@ export default function Workspace({ visible }: WorkspaceProps): React.JSX.Elemen
     }
   }, [copilotMessages]);
 
+  // Knowledge Base Ingest logic bridging to the FastAPI endpoint /api/rag/ingest
+  const handleIngestKnowledgeBase = async () => {
+    if (!folderPath || isIngesting) return;
+    setIsIngesting(true);
+    setIngestStatus("Ingesting knowledge...");
+    try {
+      // Connect to Moltress backend port (default 8765)
+      const workspaceName = folderPath.split(/[/\\]/).pop() || "default";
+      const res = await fetch("http://127.0.0.1:8765/api/rag/ingest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: folderPath, workspace: workspaceName })
+      });
+      if (res.ok) {
+        setIngestStatus("Knowledge Base Ready!");
+        setTimeout(() => setIngestStatus(null), 3500);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setIngestStatus(err?.error?.message || "Ingestion failed.");
+      }
+    } catch (e) {
+      setIngestStatus("Connection error.");
+    } finally {
+      setIsIngesting(false);
+    }
+  };
+
   const handlePickFolder = async (): Promise<void> => {
     const path = await window.hermesAPI.selectFolder();
     if (path) {
@@ -559,6 +588,7 @@ export default function Workspace({ visible }: WorkspaceProps): React.JSX.Elemen
       setOpenTabs([]);
       setActiveTabPath(null);
       setIsEditorMode(false);
+      setIngestStatus(null);
     }
   };
 
@@ -568,6 +598,7 @@ export default function Workspace({ visible }: WorkspaceProps): React.JSX.Elemen
     setOpenTabs([]);
     setActiveTabPath(null);
     setIsEditorMode(false);
+    setIngestStatus(null);
   };
 
   // Open a file in the editor (handles tabs)
@@ -1288,6 +1319,26 @@ export default function Workspace({ visible }: WorkspaceProps): React.JSX.Elemen
             </span>
           </div>
           <div className="workspace-sidebar-actions">
+            {ingestStatus && (
+              <span style={{ fontSize: 10, color: "#a8c7fa", marginRight: 4, fontStyle: "italic", alignSelf: "center", whiteSpace: "nowrap" }}>
+                {ingestStatus}
+              </span>
+            )}
+            {folderPath && (
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={handleIngestKnowledgeBase}
+                disabled={isIngesting}
+                title="Ingest/Add Knowledge"
+                style={{ padding: "4px 8px", borderRadius: 4, display: "flex", alignItems: "center", gap: 4, justifyContent: "center", background: "transparent", border: "1px solid #0e639c", color: "#a8c7fa", cursor: isIngesting ? "wait" : "pointer", fontSize: 11 }}
+                onMouseEnter={(e) => { if (!isIngesting) e.currentTarget.style.background = "#0e639c"; e.currentTarget.style.color = "#fff"; }}
+                onMouseLeave={(e) => { if (!isIngesting) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#a8c7fa"; } }}
+              >
+                <Layers size={13} />
+                <span>{isIngesting ? "Indexing..." : "Ingest"}</span>
+              </button>
+            )}
             {folderPath && (
               <button
                 type="button"

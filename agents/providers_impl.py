@@ -40,44 +40,30 @@ class LocalCodeRAGProvider(RAGProvider):
         if not project_root or not os.path.exists(project_root):
             return []
 
-        query_terms = set(re.findall(r"\w+", query.lower()))
-        if not query_terms:
+        import sys
+        rag_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../Moltress_RAG'))
+        if rag_src not in sys.path:
+            sys.path.insert(0, rag_src)
+
+        try:
+            from src.retrieval import vector_search
+        except ImportError:
             return []
 
-        results: List[RetrievedDocument] = []
-
-        for root, dirs, files in os.walk(project_root):
-            dirs[:] = [d for d in dirs if d not in IGNORED_DIR_NAMES]
-            for fname in files:
-                if is_sensitive_file(fname):
-                    continue
-                if fname.endswith((".py", ".md", ".json", ".txt")):
-                    full_path = os.path.join(root, fname)
-                    rel_path = os.path.relpath(full_path, project_root)
-                    try:
-                        with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                            content = f.read()
-                    except Exception:
-                        continue
-
-                    # Split by double newline / paragraph / functions
-                    chunks = [c.strip() for c in content.split("\n\n") if c.strip()]
-                    for i, chunk in enumerate(chunks):
-                        chunk_terms = set(re.findall(r"\w+", chunk.lower()))
-                        overlap = len(query_terms.intersection(chunk_terms))
-                        if overlap > 0:
-                            score = round(overlap / (len(query_terms) + 1), 2)
-                            results.append(
-                                RetrievedDocument(
-                                    source=f"{rel_path}#chunk-{i+1}",
-                                    content=chunk[:1000],
-                                    score=score,
-                                    metadata={"file": rel_path, "chunk_index": i},
-                                )
-                            )
-
-        results.sort(key=lambda d: d.score or 0.0, reverse=True)
-        return results[:top_k]
+        workspace_name = os.path.basename(os.path.normpath(project_root))
+        snippets = vector_search.search(workspace_name, query, k=top_k)
+        
+        results = []
+        for s in snippets:
+            results.append(
+                RetrievedDocument(
+                    source=f"{s['file']}#chunk-{s['chunk_index']}",
+                    content=s['text'][:1000],
+                    score=1.0, 
+                    metadata={"file": s['file'], "chunk_index": s['chunk_index']}
+                )
+            )
+        return results
 
 
 class ASTGraphProvider(GraphProvider):
